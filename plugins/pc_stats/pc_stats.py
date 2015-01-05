@@ -3,62 +3,58 @@ try:
 except:
   psutil = None
 
-import txthings.resource as resource
-import txthings.coap as coap
-from twisted.internet.task import LoopingCall
+import asyncio
 
-class CBResource(resource.CoAPResource):
+import aiocoap.resource as resource
+import aiocoap
+
+class CBResource(resource.ObservableResource):
 
   def __init__(self, rate, fn):
-    resource.CoAPResource.__init__(self)
-    self.visible = True
-    self.observable = True
+    super(CBResource, self).__init__()
     self.fn = fn
-    LoopingCall(self.updatedState).start(rate)
+    self.notify(rate)
 
+  def notify(self, rate):
+    self.updated_state()
+    asyncio.get_event_loop().call_later(rate, self.notify, rate)
+
+  @asyncio.coroutine
   def render_GET(self, req):
-    return defer.succeed(coap.Message(code=coap.CONTENT, payload=str(self.fn())))
+    payload = str(self.fn()).encode('ascii')
+    return aiocoap.Message(code=aiocoap.CONTENT, payload=payload)
 
-def cpuResources(rate):
-  cpur = resource.CoAPResource()
-  for i in xrange(psutil.cpu_count()):
-    cpuidxr = resource.CoAPResource()
-    cpuidxr.putChild('utilization', CBResource(rate, lambda: psutil.cpu_percent(interval=0, percpu=True)[i]))
-    cpur.putChild(str(i), cpuidxr)
-  return cpur
+def cpuResources(root, rate):
+  for i in range(psutil.cpu_count()):
+    root.add_resource(('psutil', 'cpu', str(i), 'utilization'), CBResource(rate,
+      lambda: psutil.cpu_percent(interval=0, percpu=True)[i]))
 
-def netResources(rate):
+def netResources(root, rate):
   attrs = ['bytes_sent', 'bytes_recv', 'packets_sent', 'packets_recv', 'errin',
     'errout', 'dropin', 'dropout']
-  netr = resource.CoAPResource()
-  for itfc,_ in psutil.net_io_counters(pernic=True).iteritems():
-    itfcr = resource.CoAPResource()
+  for itfc,_ in psutil.net_io_counters(pernic=True).items():
     for attr in attrs:
-      itfcr.putChild(attr, CBResource(rate, lambda: getattr(psutil.net_io_counters(pernic=True)[itfc], attr)))
-    netr.putChild(itfc, itfcr)
-  return netr
+      root.add_resource(('psutil', 'net', itfc, attr), CBResource(rate,
+        lambda: getattr(psutil.net_io_counters(pernic=True)[itfc], attr)))
 
-def memResources(rate):
-  return CBResource(rate, lambda: psutil.virtual_memory().percent)
+def memResources(root, rate):
+  root.add_resource(('psutil', 'mem'), CBResource(rate, lambda: psutil.virtual_memory().percent))
 
-def swapResources(rate):
-  return CBResource(rate, lambda: psutil.swap_memory().percent)
+def swapResources(root, rate):
+  root.add_resource(('psutil', 'swap'), CBResource(rate, lambda: psutil.swap_memory().percent))
 
-def diskResources(rate):
-  disk = resource.CoAPResource()
+def diskResources(root, rate):
   for d in psutil.disk_partitions():
-    name = d.mountpoint.replace('/', '_').replace('\\', '_')
-    disk.putChild(name, CBResource(rate, lambda: psutil.disk_usage(d.mountpoint).percent))
-  return disk
+    # TODO: replace with quote
+    name = d.mountpoint.replace('/', '%2F').replace('\\', '%5C')
+    root.add_resource(('psutil', 'disk', name), CBResource(rate,
+      lambda: psutil.disk_usage(d.mountpoint).percent))
 
 def init(config, root):
   if psutil == None: return
-  if not config.has_option('pc_stats', 'rate'): raise 'Missing rate'
   rate = config.getfloat('pc_stats', 'rate')
-  psutilr = resource.CoAPResource()
-  psutilr.putChild('cpu',  cpuResources(rate))
-  psutilr.putChild('net',  netResources(rate))
-  psutilr.putChild('mem',  memResources(rate))
-  psutilr.putChild('swap', swapResources(rate))
-  psutilr.putChild('disk', diskResources(rate))
-  root.putChild('psutil', psutilr)
+  cpuResources(root,  rate)
+  netResources(root,  rate)
+  memResources(root,  rate)
+  swapResources(root, rate)
+  diskResources(root, rate)

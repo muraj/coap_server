@@ -1,53 +1,51 @@
-import txthings.resource as resource
-import txthings.coap as coap
 import xml.etree.ElementTree as ET
-from twisted.internet.task import LoopingCall
-import subprocess
+import asyncio
+import asyncio.subprocess
+
+import aiocoap.resource as resource
+import aiocoap
 
 resources = []
 smi_etree = None
 
+@asyncio.coroutine
 def updateNVSMI():
   global smi_etree
-  proc = subprocess.Popen(['nvidia-smi', '-q', '-x'], stdout=subprocess.PIPE)
-  proc.wait()
-  stdout, _ = proc.communicate()
-  smi_etree = ET.fromstring(stdout)
+  proc = yield from asyncio.create_subprocess_exec('nvidia-smi', '-q', '-x',
+    stdout=asyncio.subprocess.PIPE)
+  yield from proc.wait()
+  data = yield from proc.stdout.read()
+  smi_etree = ET.fromstring(data)
 
 def updateResources():
   global resources
   for r in resources:
-    r.updatedState()
+    r.updated_state()
 
-def update():
-  updateNVSMI()
-  updateResources()
+@asyncio.coroutine
+def update(rate):
+  while 1:
+    yield from updateNVSMI()
+    updateResources()
+    yield from asyncio.sleep(rate)
 
-class nvidiaResource(resource.CoAPResource):
-
-  isLeaf = True
+class nvidiaResource(resource.ObservableResource):
 
   def __init__(self, elemPath):
-    resource.CoAPResource.__init__(self)
-    self.visible = True
-    self.observable = True
+    super(nvidiaResource, self).__init__()
     self.elemPath = elemPath
 
+  @asyncio.coroutine
   def render_GET(self, request):
     global smi_etree
-    txt = smi_etree.find_text(self.elemPath)
-    response = coap.Message(code=coap.CONTENT, payload=txt)
-    return defer.succeed(response)
+    txt = smi_etree.findtext(self.elemPath).strip().encode('ascii')
+    return aiocoap.Message(code=aiocoap.CONTENT, payload=txt)
 
 def init(config, root):
   global resources, smi_etree
-  updateNVSMI()
-  #idxs = [ x.strip() for x in config.get('nvidia', 'devices').split(',') ]
-  nv = resource.CoAPResource()
-  for idx in xrange(len(smi_etree.findall('gpu'))):
-    idxr = resource.CoAPResource()
-    resources.append(nvidiaResource("gpu[%d]/temperature/gpu_temp" % idx))
-    idxr.putChild('temp', resources[-1])
-    nv.putChild(str(idx), idxr)
-  root.putChild('nvidia', nv)
-  LoopingCall(update).start(config.getfloat('nvidia', 'rate'))
+  asyncio.get_event_loop().run_until_complete(updateNVSMI())
+  for idx in range(len(smi_etree.findall('gpu'))):
+    resources.append(nvidiaResource("gpu[%d]/temperature/gpu_temp" % (idx+1)))
+    root.add_resource(('nvidia', str(idx), 'temp'), resources[-1])
+  rate = config.getfloat('nvidia', 'rate')
+  asyncio.async(update(rate))

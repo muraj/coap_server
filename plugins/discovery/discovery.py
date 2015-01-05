@@ -1,22 +1,26 @@
-import txthings.resource as resource
-import txthings.coap as coap
+import asyncio
 
-from twisted.internet import defer
+import aiocoap.resource as resource
+import aiocoap
 
-class CoreResource(resource.CoAPResource):
+class CoreResource(resource.Resource):
+
   def __init__(self, root):
-    resource.CoAPResource.__init__(self)
+    super(CoreResource, self).__init__()
     self.root = root
+
+  @asyncio.coroutine
   def render_GET(self, req):
     data = []
-    self.root.generateResourceList(data, '')
-    payload = ','.join(data)
-    resp = coap.Message(code=coap.CONTENT, payload=payload)
-    resp.opt.content_format = coap.media_types_rev['application/link-format']
-    return defer.succeed(resp)
+    for uri, res in self.root._resources.items():
+      opts = ['<' + '/'.join(uri) + '>']
+      # Add more
+      data.append(';'.join(opts))
+    payload = ','.join(data).encode('utf-8')
+    response = aiocoap.Message(code=aiocoap.CONTENT, payload=payload)
+    response.opt.content_format = 40
+    return response
+
 
 def init(config, root):
-  well_known = resource.CoAPResource()
-  core = CoreResource(root)
-  well_known.putChild('core', core)
-  root.putChild('.well-known', well_known)
+  root.add_resource(('.well-known', 'core'), CoreResource(root))

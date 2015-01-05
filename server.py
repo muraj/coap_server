@@ -1,25 +1,24 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 import os
 import sys
 import imp
 import glob
-import ConfigParser
-import datetime
+import logging
+import configparser
 
-from twisted.internet import defer
-from twisted.internet.protocol import DatagramProtocol
-from twisted.internet import reactor
-from twisted.python import log
+import asyncio
 
-import txthings.resource as resource
-import txthings.coap as coap
+import aiocoap.resource as resource
+import aiocoap
 
-# Resource tree creation
 if __name__ == '__main__':
-  log.startLogging(sys.stdout)
-  root = resource.CoAPResource()
 
-  config = ConfigParser.ConfigParser()
+  logging.basicConfig(level=logging.INFO)
+  logging.getLogger('coap-server').setLevel(logging.DEBUG)
+
+  root = resource.Site()
+
+  config = configparser.ConfigParser()
   defaultCfg = os.path.expanduser('~/.config/coap')
   if not os.path.exists(defaultCfg):
     os.mkdir(defaultCfg)
@@ -31,15 +30,14 @@ if __name__ == '__main__':
     if not config.has_section(key): continue
     if not config.has_option(key, 'enable'): continue
     if not config.getboolean(key, 'enable'): continue
-    log.msg("Loading plugin %s..." % key)
+    logging.getLogger('coap-server').info("Loading plugin %s...", key)
     try:
       f, p, desc = imp.find_module(key, [pluginsDir + '/plugins'])
       module = imp.load_module(key, f, p, desc)
       init = getattr(module, 'init', None)
       if callable(init): init(config, root)
-    except:
-      log.err()
+    except Exception as e:
+      logging.getLogger('coap-server').error("Error loading plugin %s: %s", key, e)
 
-  endpoint = resource.Endpoint(root)
-  reactor.listenUDP(coap.COAP_PORT, coap.Coap(endpoint)) #, interface="::")
-  reactor.run()
+  asyncio.async(aiocoap.Context.create_server_context(root))
+  asyncio.get_event_loop().run_forever()

@@ -1,8 +1,7 @@
-import os
+import asyncio
 
-import txthings.resource as resource
-import txthings.coap as coap
-from twisted.internet.task import LoopingCall
+import aiocoap.resource as resource
+import aiocoap
 
 WIRELESS_FILE = '/proc/net/wireless'
 wireless_stats = {}
@@ -23,40 +22,30 @@ def updateResources():
   for r in wireless_resources:
     r.updatedState()
 
-def update():
+def update(rate):
   updateWifi()
   updateResources()
+  asyncio.get_event_loop().call_later(rate, update, rate)
 
-class wirelessResource(resource.CoAPResource):
-  isLeaf = True
+class wirelessResource(resource.ObservableResource):
 
   def __init__(self, itfc, idx):
-    resource.CoAPResource.__init__(self)
-    self.visible = True
-    self.observable = True
+    super(wirelessResource, self).__init__()
     self.itfc = itfc
     self.idx = idx
 
   def render_GET(self, req):
     global wireless_stats
-    vals = wireless_stats.get(self.itfc, None)
-    if vals != None and len(vals) > idx:
-      resp = coap.Message(code=coap.CONTENT, payload=vals[idx])
-      return defer.succeed(resp)
-    return defer.fail()
+    vals = wireless_stats[self.itfc]
+    return aiocoap.Message(code=aiocoap.CONTENT, payload=vals[idx].encode('ascii'))
 
 def init(config, root):
   global WIRELESS_FILE, wireless_resources
   interfaces = [ x.strip() for x in config.get('wireless', 'interfaces').split(',') ]
   value_strings = ['status', 'link', 'level', 'noise']
   rate = config.getfloat('wireless', 'rate')
-  w = resource.CoAPResource()
   for itfc in interfaces:
-    wi = resource.CoAPResource()
     for i,k in enumerate(value_strings):
       wireless_resources.append(wirelessResource(itfc, i))
-      wi.putChild(k, wireless_resources[-1])
-    w.putChild(itfc, wi)
-  updateWifi()
-  root.putChild('wireless', w)
-  LoopingCall(update).start(rate)
+      root.add_resource(('wireless', itfc, k), wireless_resources[-1])
+  update(rate)
